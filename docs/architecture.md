@@ -395,6 +395,8 @@ over — it just moves the action outside the platform where nothing records it.
 
 ## 10. Related documents
 
+- [diagrams/](diagrams/) — the deployment, sequence and flow diagrams, also
+  embedded in the project README
 - [scale.md](scale.md) — capacity math and what breaks first as volume grows
 - [reconciliation.md](reconciliation.md) — the digest algorithm in detail
 - [security.md](security.md) — threat model and compliance boundary
