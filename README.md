@@ -35,50 +35,233 @@ This platform is organised around the position that a migration which cannot
 
 ## How it works
 
+### Deployment
+
+<p align="center">
+  <img src="docs/diagrams/aws-architecture.svg" alt="AWS deployment: an on-premise source network holding the source database, the .dat extractor, the CDC connector and the tokenisation boundary backed by an HSM, joined by Direct Connect to a private AWS VPC holding the S3 parts bucket, Amazon MSK, KMS, five ECS Fargate services, an Aurora cluster and observability." width="100%">
+</p>
+
+<p align="center">
+  <sub>
+    Download <a href="docs/diagrams/aws-architecture.svg"><b>SVG</b></a> ·
+    <a href="docs/diagrams/aws-architecture.png"><b>PNG</b></a> ·
+    regenerate with <code>python3 docs/diagrams/generate_aws_architecture.py &gt; docs/diagrams/aws-architecture.svg</code>
+  </sub>
+</p>
+
+Two things in that picture carry most of the design.
+
+The **confidentiality boundary** sits inside the source network, not at the
+loader. Protected columns are tokenised before anything crosses Direct Connect,
+so the parts bucket, the broker, the services and the target all hold tokens
+rather than plaintext. The HSM is called once per process to unwrap a data key,
+never once per row — an HSM does low thousands of operations per second and a
+migration needs millions.
+
+The **bulk path never passes through a worker**. Aurora reads parts from S3
+itself through the gateway endpoint, so a terabyte of extract does not get
+marshalled through a Go process on its way into the database. The workers issue
+the statements; the bytes take a different route.
+
+### Sequence — the two phases overlap, and that overlap is the problem
+
+Phase 1 and Phase 2 are not sequential. The extract runs while production keeps
+writing, which is what makes a live migration hard and what every mechanism below
+exists to survive.
+
+```mermaid
+%% Migration sequence — how a row gets from the source to the target, and how the
+%% platform proves it arrived correctly.
+%% ---
+%% The single most important thing this diagram shows is the "par" block: the bulk
+%% extract and the change stream run at the same time. Every hard problem in a
+%% live migration lives in that overlap.
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant Src as Source database
+    participant Ext as .dat extractor
+    participant Conn as CDC connector
+    participant S3 as S3 parts bucket
+    participant MSK as Change stream
+    participant Load as snapshot-loader
+    participant Apply as cdc-applier
+    participant Tgt as Aurora target
+    participant Rec as reconciler
+    participant CP as controlplane
+
+    Note over App,Tgt: Phase 1 and Phase 2 run at the same time.<br/>Every hard problem in a live migration lives in that overlap.
+
+    par Phase 1 — bulk extract and load
+        Ext->>Src: insert LOW watermark into the signal table
+        Ext->>Src: select the chunk rows
+        Src-->>Ext: chunk
+        Ext->>Src: insert HIGH watermark
+        Note right of Ext: the watermarks travel through the source's own log,<br/>so they are ordered against the data changes
+        Ext->>Ext: tokenise protected columns
+        Ext->>S3: append to the .dat part, roll on size, seal with row count and SHA-256
+        Note right of S3: only a SEALED part is eligible to load,<br/>which is what lets the load start before the extract ends
+        S3-->>Load: part sealed
+        Load->>Load: verify the SHA-256 before touching the database
+        Load->>Tgt: create the staging table
+        Tgt->>S3: native import — bulk bytes never enter a worker
+        Load->>Tgt: one set-based MERGE, fenced on the extract LSN
+    and Phase 2 — change data capture
+        App->>Src: ordinary production writes
+        Src-->>Conn: transaction log — changes and watermarks in one order
+        Conn->>Conn: tokenise protected columns
+        Conn->>MSK: protected change events, partitioned by primary key
+        MSK-->>Apply: batch
+        Apply->>Apply: coalesce to one event per row, newest LSN wins
+        Apply->>Tgt: BEGIN
+        Apply->>Tgt: fenced upsert — applied only if the stored LSN is not newer
+        Apply->>Tgt: write the stream offset in the SAME transaction
+        Apply->>Tgt: COMMIT
+    end
+
+    Note over Load,Tgt: A stale part arriving after a fresh change event loses to the fence.<br/>That is the snapshot-clobbers-CDC bug, closed by construction rather than by ordering.
+
+    loop continuously, every few minutes
+        Rec->>Src: digest of a key range
+        Rec->>Tgt: digest of the same range
+        alt digests agree
+            Rec-->>CP: clean — two queries, regardless of table size
+        else digests disagree
+            Rec->>Rec: bisect the range and descend
+            Rec->>Tgt: read rows only at the leaf
+            Rec-->>CP: findings, with the exact keys that differ
+        end
+    end
+
+    CP->>CP: evaluate the cutover gate
+    alt every condition satisfied
+        CP-->>App: 200 — stable lag, no open dead letters, recent clean verification
+        App->>Tgt: production traffic moves to the target
+        Tgt-->>Src: reverse replication stays armed, so rollback is still possible
+    else any blocker
+        CP-->>App: 409 with every blocker, observed value against required value
+    end
 ```
-        ON-PREMISE / SOURCE NETWORK                    │        TARGET (AWS)
-                                                       │
-  ┌──────────────┐                                     │
-  │  Source DB   │──unload──▶ .dat parts ──seal──┐     │
-  │  (DB2, PG,   │            (suffixed,          │    │
-  │   MySQL…)    │             size-rolled,       │    │
-  └──────┬───────┘             SHA-256 sealed)    │    │
-         │                                        │    │
-         │ transaction log                        ▼    │
-         ▼                                   object store
-  ┌──────────────┐                                 │    │
-  │ CDC connector│                                 │    │
-  │ (Debezium /  │                                 │    │
-  │  Qlik / DMS) │                                 │    │
-  └──────┬───────┘                                 │    │
-         │                                         │    │
-         ▼                                         │    │
-  ┌──────────────┐     ← the confidentiality        │   │
-  │  Protect     │       boundary: tokenise or      │   │
-  │  (tokenise / │       encrypt here, before       │   │
-  │   encrypt)   │       anything leaves            │   │
-  └──────┬───────┘                                  │   │
-         │                                          │   │
-         ▼                                          │   │
-   ═══ broker ══════════════════════════════════════│═══│═══▶
-                                                    │   │
-                                                    ▼   ▼
-                                       ┌────────────────────────┐
-                                       │  snapshot-loader       │  bounded pool
-                                       │  verify → stage →      │  native S3 import
-                                       │  LSN-fenced MERGE      │  set-based merge
-                                       ├────────────────────────┤
-                                       │  cdc-applier           │  batch → coalesce
-                                       │  offset committed IN   │  → fenced upsert
-                                       │  the data transaction  │  → bisect on failure
-                                       ├────────────────────────┤
-                                       │  reconciler            │  hierarchical digests
-                                       │  repair-worker         │  durable DLQ drain
-                                       │  controlplane          │  cutover gate
-                                       └───────────┬────────────┘
-                                                   ▼
-                                              Target database
+
+<p align="center">
+  <sub>
+    Download <a href="docs/diagrams/migration-sequence.svg"><b>SVG</b></a> ·
+    <a href="docs/diagrams/migration-sequence.png"><b>PNG</b></a> ·
+    source <a href="docs/diagrams/migration-sequence.mmd"><b>.mmd</b></a>
+  </sub>
+</p>
+
+### Flow — every path a row can take, failures included
+
+Both paths converge on a single decision: the LSN fence. That convergence is the
+whole design. Because every write is conditional on the source change sequence
+number, arrival order stops mattering — a replayed batch, a retried statement, a
+dead letter drained forty minutes late and a stale snapshot part all resolve to
+the same correct state.
+
+```mermaid
+%% Event lifecycle — every path a single row can take through the platform,
+%% including the failure paths, which are most of the value.
+%% ---
+%% The shape worth noticing: both paths converge on one decision, the LSN fence.
+%% That convergence is the design. It is why arrival order stops mattering, and
+%% why replay, retry and a late dead letter are all safe.
+flowchart LR
+    SRC[("Source database<br/>still serving traffic")]:::src
+
+    subgraph BULK["Phase 1 · bulk part path"]
+        direction TB
+        A1["Chunk read between the<br/>low and high watermarks"]:::store
+        A2["Tokenise protected columns"]:::sec
+        A3["Roll and SEAL the part<br/>row count + SHA-256"]:::store
+        A4{"Digest<br/>verifies?"}:::store
+        A5["Re-stage. A truncated part<br/>loads cleanly and omits rows"]:::fail
+        A6["Native S3 import,<br/>then one set-based MERGE"]:::store
+        A1 --> A2 --> A3 --> A4
+        A4 -- "no" --> A5 --> A3
+        A4 -- "yes" --> A6
+    end
+
+    subgraph STRM["Phase 2 · change stream path"]
+        direction TB
+        B1["Read the transaction log"]:::strm
+        B2["Tokenise protected columns"]:::sec
+        B3["Broker, partitioned<br/>by primary key"]:::strm
+        B4["Coalesce the batch,<br/>newest LSN per row wins"]:::strm
+        B1 --> B2 --> B3 --> B4
+    end
+
+    SRC -- "existed before<br/>the extract" --> A1
+    SRC -- "changed during<br/>the migration" --> B1
+
+    A6 --> F
+    B4 --> F
+    F{"LSN FENCE<br/>is the incoming LSN not older<br/>than the one on the row?"}:::fence
+
+    F -- "no" --> DROP["Discard. A stale write<br/>can never win"]:::ok
+    F -- "yes" --> W["The row AND the stream offset,<br/>in ONE transaction"]:::data
+    W --> OK{"Committed?"}:::data
+    OK -- "yes" --> DONE["Applied"]:::ok
+
+    subgraph FAILS["When a write fails"]
+        direction TB
+        CL{"Transient or<br/>permanent?"}:::fail
+        RT["Backoff with full jitter,<br/>so recovery meets no retry storm"]:::fail
+        BI["Bisect the batch to isolate<br/>the offending record"]:::fail
+        REST["The rest of the batch<br/>applies normally"]:::ok
+        DLQ["Dead-letter it: original bytes,<br/>encrypted, in a table that<br/>outlives any topic retention"]:::fail
+        RW["repair-worker claims it<br/>with SKIP LOCKED"]:::fail
+        BG{"Retry budget<br/>left?"}:::fail
+        Q["QUARANTINE — terminal.<br/>A record that keeps failing<br/>is a signal, not noise"]:::fail
+        CL -- "transient" --> RT
+        CL -- "permanent" --> BI
+        BI --> REST
+        BI --> DLQ --> RW --> BG
+        BG -- "no" --> Q
+    end
+
+    OK -- "no" --> CL
+    RT --> W
+    BG -- "yes" --> W
+
+    DONE --> V
+    DROP --> V
+    REST --> V
+    V["Compare range digests<br/>on both databases"]:::verify
+    V --> VD{"Digests<br/>agree?"}:::verify
+    VD -- "yes · two queries,<br/>whatever the table size" --> G
+    VD -- "no" --> DS["Bisect to the exact rows.<br/>Logarithmic, not linear"]:::verify
+    DS --> G
+
+    G{"CUTOVER GATE<br/>stable lag · no open dead letters<br/>recent clean verification<br/>every part loaded · rollback armed"}:::gate
+    Q --> G
+    G -- "all satisfied" --> CUT(["200 — repoint the application,<br/>rollback still possible"]):::ok
+    G -- "any blocker" --> BL["409 with every blocker at once,<br/>observed against required"]:::fail
+    BL --> V
+
+    classDef src fill:#EDF2F7,stroke:#8497AB,stroke-width:1.5px,color:#16212E
+    classDef store fill:#EAF5EF,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef strm fill:#F1ECF7,stroke:#6A4C93,stroke-width:1.5px,color:#16212E
+    classDef sec fill:#FAEDE9,stroke:#B4472A,stroke-width:1.5px,color:#16212E
+    classDef data fill:#E9F1FB,stroke:#1F5FA9,stroke-width:1.5px,color:#16212E
+    classDef fence fill:#FFE9C7,stroke:#E08B2E,stroke-width:3px,color:#16212E
+    classDef ok fill:#E6F4EC,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef fail fill:#FBECE8,stroke:#B4472A,stroke-width:1.5px,color:#16212E
+    classDef verify fill:#EAF5EF,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef gate fill:#FFE9C7,stroke:#E08B2E,stroke-width:3px,color:#16212E
+
+    style BULK fill:#F6FAF8,stroke:#2E7D57,stroke-width:1.5px,color:#2E7D57
+    style STRM fill:#F8F6FB,stroke:#6A4C93,stroke-width:1.5px,color:#6A4C93
+    style FAILS fill:#FDF6F4,stroke:#B4472A,stroke-width:1.5px,color:#B4472A
 ```
+
+<p align="center">
+  <sub>
+    Download <a href="docs/diagrams/event-lifecycle-flow.svg"><b>SVG</b></a> ·
+    <a href="docs/diagrams/event-lifecycle-flow.png"><b>PNG</b></a> ·
+    source <a href="docs/diagrams/event-lifecycle-flow.mmd"><b>.mmd</b></a>
+  </sub>
+</p>
 
 Full detail, including the watermark protocol and the failure analysis behind
 each decision, is in [`docs/architecture.md`](docs/architecture.md).
@@ -318,6 +501,7 @@ Being explicit about what this does *not* do is as useful as the feature list:
 | Document | What it covers |
 |---|---|
 | [architecture.md](docs/architecture.md) | Full design, data flow, failure analysis |
+| [diagrams/](docs/diagrams/) | Architecture, sequence and flow diagrams, downloadable |
 | [scale.md](docs/scale.md) | Capacity math, sizing rules, what breaks first |
 | [reconciliation.md](docs/reconciliation.md) | The digest algorithm and its guarantees |
 | [security.md](docs/security.md) | Threat model, compliance boundary, key handling |
