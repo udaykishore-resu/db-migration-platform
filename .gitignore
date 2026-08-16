@@ -15,3 +15,6 @@ go.work.sum
 *.tfstate.*
 .terraform/
 .terraform.lock.hcl
+
+# Stray root binary from "go build ./..." in the module root
+/db-migration-platform
