@@ -1,14 +1,22 @@
+# golangci-lint configuration.
+#
+# Schema version 2. golangci-lint v2 rejects a v1 file outright with
+# "unsupported version of the configuration", because v1 files carry no version
+# key at all. If you are on v1 and need to go back, `golangci-lint migrate`
+# converts between the two — but note that it does not carry comments across, and
+# the comments here are the reasoning for the exclusions.
+version: "2"
+
 run:
   timeout: 5m
   tests: true
 
 linters:
+  # The standard set is errcheck, govet, ineffassign, staticcheck and unused.
+  # In v2 staticcheck also absorbs what used to be gosimple and stylecheck.
+  default: standard
+
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - bodyclose
     - copyloopvar
     - dupl
@@ -24,35 +32,46 @@ linters:
     - unparam
     - whitespace
 
-linters-settings:
-  revive:
+  settings:
+    revive:
+      rules:
+        - name: exported
+          severity: warning
+        - name: package-comments
+    gocritic:
+      enabled-tags: [diagnostic, performance, style]
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+    dupl:
+      threshold: 180
+    goconst:
+      min-len: 4
+      min-occurrences: 5
+    gosec:
+      excludes:
+        # SQL is assembled from operator-controlled identifiers that the dialect
+        # layer quotes; every row value travels as a bind parameter. See
+        # internal/dialect for the quoting, and the tests that assert on it.
+        - G201
+        - G202
+
+  exclusions:
     rules:
-      - name: exported
-        severity: warning
-      - name: package-comments
-  gocritic:
-    enabled-tags: [diagnostic, performance, style]
-    disabled-checks:
-      - hugeParam
-      - rangeValCopy
-  dupl:
-    threshold: 180
-  goconst:
-    min-len: 4
-    min-occurrences: 5
-  gosec:
-    excludes:
-      # SQL is built from operator-controlled identifiers that are quoted by the
-      # dialect layer; every row value travels as a bind parameter.
-      - G201
-      - G202
+      - path: _test\.go
+        linters: [dupl, goconst, gosec, errcheck, unparam]
+      # The dialect layer necessarily assembles SQL strings; that is its entire
+      # job, and the two engine implementations are deliberately parallel so they
+      # can be read against each other.
+      - path: internal/dialect/
+        linters: [dupl]
+
+formatters:
+  # gofmt moved out of `linters` in v2 and into its own section, along with
+  # goimports, gofumpt and gci.
+  enable:
+    - gofmt
 
 issues:
-  exclude-rules:
-    - path: _test\.go
-      linters: [dupl, goconst, gosec, errcheck, unparam]
-    # The dialect layer necessarily assembles SQL strings; that is its entire job.
-    - path: internal/dialect/
-      linters: [dupl]
   max-issues-per-linter: 0
   max-same-issues: 0

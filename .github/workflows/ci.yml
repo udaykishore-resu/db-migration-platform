@@ -45,9 +45,16 @@ jobs:
         with:
           go-version: '1.24'
           cache: true
-      - uses: golangci/golangci-lint-action@v6
+      # The action major version and the golangci-lint major version are coupled:
+      # action v6 supports golangci-lint v1 only, v7 and later support v2 only.
+      # .golangci.yml here is a v2 config, so the action must be v7+.
+      #
+      # The version is pinned rather than set to `latest` so that a new
+      # golangci-lint release cannot fail CI on a commit that did not change.
+      # Bump it deliberately.
+      - uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          version: v2.11
 
   integration:
     name: integration against real engines
