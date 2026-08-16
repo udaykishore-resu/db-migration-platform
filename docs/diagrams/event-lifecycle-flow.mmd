@@ -1,0 +1,93 @@
+%% Event lifecycle — every path a single row can take through the platform,
+%% including the failure paths, which are most of the value.
+%% ---
+%% The shape worth noticing: both paths converge on one decision, the LSN fence.
+%% That convergence is the design. It is why arrival order stops mattering, and
+%% why replay, retry and a late dead letter are all safe.
+flowchart LR
+    SRC[("Source database<br/>still serving traffic")]:::src
+
+    subgraph BULK["Phase 1 · bulk part path"]
+        direction TB
+        A1["Chunk read between the<br/>low and high watermarks"]:::store
+        A2["Tokenise protected columns"]:::sec
+        A3["Roll and SEAL the part<br/>row count + SHA-256"]:::store
+        A4{"Digest<br/>verifies?"}:::store
+        A5["Re-stage. A truncated part<br/>loads cleanly and omits rows"]:::fail
+        A6["Native S3 import,<br/>then one set-based MERGE"]:::store
+        A1 --> A2 --> A3 --> A4
+        A4 -- "no" --> A5 --> A3
+        A4 -- "yes" --> A6
+    end
+
+    subgraph STRM["Phase 2 · change stream path"]
+        direction TB
+        B1["Read the transaction log"]:::strm
+        B2["Tokenise protected columns"]:::sec
+        B3["Broker, partitioned<br/>by primary key"]:::strm
+        B4["Coalesce the batch,<br/>newest LSN per row wins"]:::strm
+        B1 --> B2 --> B3 --> B4
+    end
+
+    SRC -- "existed before<br/>the extract" --> A1
+    SRC -- "changed during<br/>the migration" --> B1
+
+    A6 --> F
+    B4 --> F
+    F{"LSN FENCE<br/>is the incoming LSN not older<br/>than the one on the row?"}:::fence
+
+    F -- "no" --> DROP["Discard. A stale write<br/>can never win"]:::ok
+    F -- "yes" --> W["The row AND the stream offset,<br/>in ONE transaction"]:::data
+    W --> OK{"Committed?"}:::data
+    OK -- "yes" --> DONE["Applied"]:::ok
+
+    subgraph FAILS["When a write fails"]
+        direction TB
+        CL{"Transient or<br/>permanent?"}:::fail
+        RT["Backoff with full jitter,<br/>so recovery meets no retry storm"]:::fail
+        BI["Bisect the batch to isolate<br/>the offending record"]:::fail
+        REST["The rest of the batch<br/>applies normally"]:::ok
+        DLQ["Dead-letter it: original bytes,<br/>encrypted, in a table that<br/>outlives any topic retention"]:::fail
+        RW["repair-worker claims it<br/>with SKIP LOCKED"]:::fail
+        BG{"Retry budget<br/>left?"}:::fail
+        Q["QUARANTINE — terminal.<br/>A record that keeps failing<br/>is a signal, not noise"]:::fail
+        CL -- "transient" --> RT
+        CL -- "permanent" --> BI
+        BI --> REST
+        BI --> DLQ --> RW --> BG
+        BG -- "no" --> Q
+    end
+
+    OK -- "no" --> CL
+    RT --> W
+    BG -- "yes" --> W
+
+    DONE --> V
+    DROP --> V
+    REST --> V
+    V["Compare range digests<br/>on both databases"]:::verify
+    V --> VD{"Digests<br/>agree?"}:::verify
+    VD -- "yes · two queries,<br/>whatever the table size" --> G
+    VD -- "no" --> DS["Bisect to the exact rows.<br/>Logarithmic, not linear"]:::verify
+    DS --> G
+
+    G{"CUTOVER GATE<br/>stable lag · no open dead letters<br/>recent clean verification<br/>every part loaded · rollback armed"}:::gate
+    Q --> G
+    G -- "all satisfied" --> CUT(["200 — repoint the application,<br/>rollback still possible"]):::ok
+    G -- "any blocker" --> BL["409 with every blocker at once,<br/>observed against required"]:::fail
+    BL --> V
+
+    classDef src fill:#EDF2F7,stroke:#8497AB,stroke-width:1.5px,color:#16212E
+    classDef store fill:#EAF5EF,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef strm fill:#F1ECF7,stroke:#6A4C93,stroke-width:1.5px,color:#16212E
+    classDef sec fill:#FAEDE9,stroke:#B4472A,stroke-width:1.5px,color:#16212E
+    classDef data fill:#E9F1FB,stroke:#1F5FA9,stroke-width:1.5px,color:#16212E
+    classDef fence fill:#FFE9C7,stroke:#E08B2E,stroke-width:3px,color:#16212E
+    classDef ok fill:#E6F4EC,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef fail fill:#FBECE8,stroke:#B4472A,stroke-width:1.5px,color:#16212E
+    classDef verify fill:#EAF5EF,stroke:#2E7D57,stroke-width:1.5px,color:#16212E
+    classDef gate fill:#FFE9C7,stroke:#E08B2E,stroke-width:3px,color:#16212E
+
+    style BULK fill:#F6FAF8,stroke:#2E7D57,stroke-width:1.5px,color:#2E7D57
+    style STRM fill:#F8F6FB,stroke:#6A4C93,stroke-width:1.5px,color:#6A4C93
+    style FAILS fill:#FDF6F4,stroke:#B4472A,stroke-width:1.5px,color:#B4472A

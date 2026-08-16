@@ -1,0 +1,71 @@
+%% Migration sequence — how a row gets from the source to the target, and how the
+%% platform proves it arrived correctly.
+%% ---
+%% The single most important thing this diagram shows is the "par" block: the bulk
+%% extract and the change stream run at the same time. Every hard problem in a
+%% live migration lives in that overlap.
+sequenceDiagram
+    autonumber
+    participant App as Application
+    participant Src as Source database
+    participant Ext as .dat extractor
+    participant Conn as CDC connector
+    participant S3 as S3 parts bucket
+    participant MSK as Change stream
+    participant Load as snapshot-loader
+    participant Apply as cdc-applier
+    participant Tgt as Aurora target
+    participant Rec as reconciler
+    participant CP as controlplane
+
+    Note over App,Tgt: Phase 1 and Phase 2 run at the same time.<br/>Every hard problem in a live migration lives in that overlap.
+
+    par Phase 1 — bulk extract and load
+        Ext->>Src: insert LOW watermark into the signal table
+        Ext->>Src: select the chunk rows
+        Src-->>Ext: chunk
+        Ext->>Src: insert HIGH watermark
+        Note right of Ext: the watermarks travel through the source's own log,<br/>so they are ordered against the data changes
+        Ext->>Ext: tokenise protected columns
+        Ext->>S3: append to the .dat part, roll on size, seal with row count and SHA-256
+        Note right of S3: only a SEALED part is eligible to load,<br/>which is what lets the load start before the extract ends
+        S3-->>Load: part sealed
+        Load->>Load: verify the SHA-256 before touching the database
+        Load->>Tgt: create the staging table
+        Tgt->>S3: native import — bulk bytes never enter a worker
+        Load->>Tgt: one set-based MERGE, fenced on the extract LSN
+    and Phase 2 — change data capture
+        App->>Src: ordinary production writes
+        Src-->>Conn: transaction log — changes and watermarks in one order
+        Conn->>Conn: tokenise protected columns
+        Conn->>MSK: protected change events, partitioned by primary key
+        MSK-->>Apply: batch
+        Apply->>Apply: coalesce to one event per row, newest LSN wins
+        Apply->>Tgt: BEGIN
+        Apply->>Tgt: fenced upsert — applied only if the stored LSN is not newer
+        Apply->>Tgt: write the stream offset in the SAME transaction
+        Apply->>Tgt: COMMIT
+    end
+
+    Note over Load,Tgt: A stale part arriving after a fresh change event loses to the fence.<br/>That is the snapshot-clobbers-CDC bug, closed by construction rather than by ordering.
+
+    loop continuously, every few minutes
+        Rec->>Src: digest of a key range
+        Rec->>Tgt: digest of the same range
+        alt digests agree
+            Rec-->>CP: clean — two queries, regardless of table size
+        else digests disagree
+            Rec->>Rec: bisect the range and descend
+            Rec->>Tgt: read rows only at the leaf
+            Rec-->>CP: findings, with the exact keys that differ
+        end
+    end
+
+    CP->>CP: evaluate the cutover gate
+    alt every condition satisfied
+        CP-->>App: 200 — stable lag, no open dead letters, recent clean verification
+        App->>Tgt: production traffic moves to the target
+        Tgt-->>Src: reverse replication stays armed, so rollback is still possible
+    else any blocker
+        CP-->>App: 409 with every blocker, observed value against required value
+    end
