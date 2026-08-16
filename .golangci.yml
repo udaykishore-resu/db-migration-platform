@@ -1,0 +1,58 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - copyloopvar
+    - dupl
+    - goconst
+    - gocritic
+    - gosec
+    - misspell
+    - nakedret
+    - noctx
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+
+linters-settings:
+  revive:
+    rules:
+      - name: exported
+        severity: warning
+      - name: package-comments
+  gocritic:
+    enabled-tags: [diagnostic, performance, style]
+    disabled-checks:
+      - hugeParam
+      - rangeValCopy
+  dupl:
+    threshold: 180
+  goconst:
+    min-len: 4
+    min-occurrences: 5
+  gosec:
+    excludes:
+      # SQL is built from operator-controlled identifiers that are quoted by the
+      # dialect layer; every row value travels as a bind parameter.
+      - G201
+      - G202
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters: [dupl, goconst, gosec, errcheck, unparam]
+    # The dialect layer necessarily assembles SQL strings; that is its entire job.
+    - path: internal/dialect/
+      linters: [dupl]
+  max-issues-per-linter: 0
+  max-same-issues: 0

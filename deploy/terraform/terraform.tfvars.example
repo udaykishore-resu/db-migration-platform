@@ -1,0 +1,36 @@
+name   = "db2-to-aurora"
+region = "us-east-1"
+
+azs      = ["us-east-1a", "us-east-1b", "us-east-1c"]
+vpc_cidr = "10.60.0.0/16"
+
+# Source network reached over Direct Connect. Leave empty for a cloud-only trial.
+onprem_cidrs = ["10.10.0.0/16"]
+
+aurora_engine         = "aurora-postgresql"
+aurora_instance_class = "db.r6g.2xlarge"
+aurora_reader_count   = 1
+
+msk_broker_count  = 3
+msk_instance_type = "kafka.m5.large"
+msk_volume_size   = 1000
+
+image_repository = "123456789012.dkr.ecr.us-east-1.amazonaws.com/db-migration-platform"
+image_tag        = "v1.0.0"
+
+# Appliers must not exceed the partition count; each is one ordering domain.
+service_desired_count = {
+  "cdc-applier"     = 3
+  "snapshot-loader" = 4
+  "reconciler"      = 1
+  "repair-worker"   = 2
+  "controlplane"    = 1
+}
+
+lag_alarm_seconds = 60
+
+tags = {
+  Environment = "production"
+  CostCentre  = "migration"
+  DataClass   = "restricted"
+}

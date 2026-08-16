@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build, vet and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l -s .)
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt -s:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
+
+      - name: Build all binaries
+        run: make build
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
+  integration:
+    name: integration against real engines
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: migration
+          POSTGRES_PASSWORD: migration
+          POSTGRES_DB: target
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U migration"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_DATABASE: target
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -prootpw"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      # The generated SQL is only meaningfully verified against real engines.
+      # Unit tests assert its shape; this job asserts that both engines accept it
+      # and that the fence, the merge and the digest actually behave as claimed.
+      - name: Apply control schema
+        env:
+          PGPASSWORD: migration
+        run: |
+          psql -h 127.0.0.1 -U migration -d target -v ON_ERROR_STOP=1 \
+            -f migrations/postgres/0001_control_schema.sql
+          mysql -h 127.0.0.1 -P 3306 -u root -prootpw < migrations/mysql/0001_control_schema.sql
+
+      - name: Integration tests
+        env:
+          PG_DSN: postgres://migration:migration@127.0.0.1:5432/target?sslmode=disable
+          MYSQL_DSN: root:rootpw@tcp(127.0.0.1:3306)/target?parseTime=true&multiStatements=true
+        run: go test -count=1 -tags=integration ./test/integration/...

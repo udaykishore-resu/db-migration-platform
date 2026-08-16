@@ -1,0 +1,17 @@
+bin/
+parts/
+coverage.out
+*.test
+*.out
+.env
+.env.*
+!.env.example
+go.work
+go.work.sum
+.DS_Store
+.idea/
+.vscode/
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl

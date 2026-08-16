@@ -1,0 +1,96 @@
+{
+  "migration_id": "db2-to-aurora-pg",
+  "environment": "development",
+  "plan_file": "examples/plan.json",
+
+  "source": {
+    "engine": "postgres",
+    "dsn_env": "SOURCE_DSN",
+    "max_open_conns": 8,
+    "max_idle_conns": 4,
+    "conn_max_lifetime": "30m"
+  },
+  "target": {
+    "engine": "postgres",
+    "dsn_env": "TARGET_DSN",
+    "max_open_conns": 16,
+    "max_idle_conns": 8,
+    "conn_max_lifetime": "30m"
+  },
+
+  "kafka": {
+    "brokers": ["localhost:9092"],
+    "group_id": "db-migration-applier",
+    "topics": ["cdc.app.accounts", "cdc.app.disputes"],
+    "min_bytes": 1024,
+    "max_bytes": 10485760,
+    "max_wait": "250ms",
+    "start_offset": "earliest"
+  },
+
+  "crypto": {
+    "key_source": "static",
+    "static_key_env": "MIGRATION_STATIC_KEY",
+    "allow_insecure_static_key": true,
+    "default_token_format": "opaque",
+    "column_token_formats": {
+      "app.accounts.branch_code": "preserve_shape"
+    }
+  },
+
+  "storage": {
+    "local_dir": "./parts",
+    "bucket": "migration-parts",
+    "prefix": "db2-to-aurora",
+    "region": "us-east-1"
+  },
+
+  "apply": {
+    "batch_size": 1000,
+    "batch_timeout": "250ms",
+    "max_rows_per_statement": 500,
+    "workers": 4,
+    "retry_base": "100ms",
+    "retry_max": "30s",
+    "retry_max_attempts": 8,
+    "dlq_retry_base": "30s",
+    "dlq_retry_max": "2h",
+    "dlq_retry_max_attempts": 12
+  },
+
+  "extract": {
+    "max_part_bytes": 2147483648,
+    "max_part_rows": 20000000,
+    "compress": true,
+    "delimiter": ",",
+    "null_sentinel": "\\N",
+    "chunk_rows": 50000,
+    "loader_concurrency": 4,
+    "signal_schema": "migration_ctl"
+  },
+
+  "reconciliation": {
+    "enabled": true,
+    "interval": "5m",
+    "leaf_rows": 5000,
+    "max_depth": 48,
+    "max_findings": 1000,
+    "workers": 2,
+    "auto_repair": false
+  },
+
+  "cutover": {
+    "max_lag": "10s",
+    "lag_stable_for": "15m",
+    "max_open_dead_letters": 0,
+    "max_reconcile_findings": 0,
+    "max_reconcile_age": "30m",
+    "require_all_parts_loaded": true,
+    "require_reverse_replication": true
+  },
+
+  "observability": {
+    "log_level": "info",
+    "admin_addr": ":9090"
+  }
+}

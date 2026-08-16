@@ -1,0 +1,36 @@
+{
+  "name": "db2-to-aurora",
+  "tables": [
+    {
+      "source": {"schema": "app", "name": "accounts"},
+      "target": {"schema": "app", "name": "accounts"},
+      "primary_key": ["account_id"],
+      "chunk_column": "account_id",
+      "chunk_size": 50000,
+      "columns": [
+        {"name": "account_id",  "type": "string",  "protect": "tokenize"},
+        {"name": "consumer_id", "type": "string",  "protect": "tokenize"},
+        {"name": "branch_code", "type": "string",  "trim_trailing_space": true},
+        {"name": "balance",     "type": "decimal", "scale": 2},
+        {"name": "opened_on",   "type": "date"},
+        {"name": "updated_at",  "type": "timestamp"},
+        {"name": "notes",       "type": "string",  "protect": "encrypt", "nullable": true},
+        {"name": "card_track",  "type": "string",  "protect": "redact"}
+      ]
+    },
+    {
+      "source": {"schema": "app", "name": "disputes"},
+      "target": {"schema": "app", "name": "disputes"},
+      "primary_key": ["dispute_id"],
+      "chunk_column": "dispute_id",
+      "chunk_size": 50000,
+      "columns": [
+        {"name": "dispute_id", "type": "string"},
+        {"name": "account_id", "type": "string",  "protect": "tokenize"},
+        {"name": "status",     "type": "string"},
+        {"name": "amount",     "type": "decimal", "scale": 2},
+        {"name": "filed_at",   "type": "timestamp"}
+      ]
+    }
+  ]
+}
