@@ -54,7 +54,7 @@ jobs:
       # Bump it deliberately.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.11
+          version: v2.12.2
 
   integration:
     name: integration against real engines

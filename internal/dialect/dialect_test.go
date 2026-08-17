@@ -94,7 +94,11 @@ func TestUpsertDoesNotAssignPrimaryKeyColumns(t *testing.T) {
 	s := spec()
 	for _, d := range allDialects() {
 		sql := d.FencedUpsert(s, []string{"account_id", "balance"}, 1)
-		update := sql[strings.Index(sql, "UPDATE"):]
+		i := strings.Index(sql, "UPDATE")
+		if i < 0 {
+			t.Fatalf("%s upsert has no update clause:\n%s", d.Name(), sql)
+		}
+		update := sql[i:]
 		if strings.Contains(update, "account_id =") {
 			t.Errorf("%s assigns the primary key in the update clause:\n%s", d.Name(), sql)
 		}

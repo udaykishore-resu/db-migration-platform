@@ -21,8 +21,8 @@ func TestIntBisectorDoesNotOverflow(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a midpoint near MaxInt64")
 	}
-	m := mid.(int64)
-	if m <= math.MaxInt64-2 || m >= math.MaxInt64 {
+	// The only value strictly between MaxInt64-2 and MaxInt64.
+	if m := mid.(int64); m != math.MaxInt64-1 {
 		t.Fatalf("midpoint %d is not strictly between the bounds", m)
 	}
 
@@ -30,7 +30,7 @@ func TestIntBisectorDoesNotOverflow(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a midpoint near MinInt64")
 	}
-	if m := mid.(int64); m <= math.MinInt64 || m >= math.MinInt64+2 {
+	if m := mid.(int64); m != math.MinInt64+1 {
 		t.Fatalf("midpoint %d is not strictly between the bounds", m)
 	}
 }
@@ -117,7 +117,7 @@ func TestStringMidpointHasNoTrailingNULs(t *testing.T) {
 		t.Skip("range not splittable, which is also acceptable here")
 	}
 	s := mid.(string)
-	if len(s) > 0 && s[len(s)-1] == 0 {
+	if s != "" && s[len(s)-1] == 0 {
 		t.Fatalf("midpoint %q ends in a NUL byte", s)
 	}
 }

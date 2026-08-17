@@ -24,14 +24,15 @@ func testSpec() model.TableSpec {
 	}
 }
 
-func newWriter(t *testing.T, cfg PartWriterConfig) (*PartWriter, string) {
+func newWriter(t *testing.T, cfg PartWriterConfig) (w *PartWriter, dir string) {
 	t.Helper()
-	dir := t.TempDir()
+	dir = t.TempDir()
 	cfg.Dir = dir
 	if cfg.Spec.Source.Name == "" {
 		cfg.Spec = testSpec()
 	}
-	w, err := NewPartWriter(cfg)
+	var err error
+	w, err = NewPartWriter(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

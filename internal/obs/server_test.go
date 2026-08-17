@@ -69,14 +69,14 @@ func TestAdminEndpoints(t *testing.T) {
 
 	// Not ready yet.
 	rec := httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", http.NoBody))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz: got %d, want 503", rec.Code)
 	}
 
 	h.Set("db", true, "")
 	rec = httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/readyz", http.NoBody))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("readyz: got %d, want 200", rec.Code)
 	}
@@ -89,13 +89,13 @@ func TestAdminEndpoints(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", http.NoBody))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("healthz: got %d, want 200", rec.Code)
 	}
 
 	rec = httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/metrics", http.NoBody))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("metrics: got %d", rec.Code)
 	}
@@ -104,7 +104,7 @@ func TestAdminEndpoints(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/custom", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/custom", http.NoBody))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("custom route: got %d", rec.Code)
 	}
@@ -116,7 +116,7 @@ func TestSetLiveFlipsHealthz(t *testing.T) {
 	a := NewAdminServer(":0", reg, h, NewLogger(os.Stderr, "error", "t", "i"), nil)
 	h.SetLive(false)
 	rec := httptest.NewRecorder()
-	a.srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	a.srv.Handler.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/healthz", http.NoBody))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d, want 503", rec.Code)
 	}

@@ -148,7 +148,7 @@ func (p *PostgresDialect) DropStagingTable(staging model.TableRef) string {
 
 // BulkImport renders the aws_s3 extension's native import. The database reads
 // directly from S3, so terabytes never traverse the worker process.
-func (p *PostgresDialect) BulkImport(staging model.TableRef, columns []string, src S3Source) (string, []any) {
+func (p *PostgresDialect) BulkImport(staging model.TableRef, columns []string, src S3Source) (query string, args []any) {
 	opts := fmt.Sprintf("(FORMAT csv, DELIMITER %s, NULL %s, QUOTE '\"')",
 		quoteLiteral(src.Delimiter), quoteLiteral(src.NullSentinel))
 
@@ -157,7 +157,7 @@ func (p *PostgresDialect) BulkImport(staging model.TableRef, columns []string, s
 		p.Placeholder(1), p.Placeholder(2), p.Placeholder(3),
 		p.Placeholder(4), p.Placeholder(5), p.Placeholder(6),
 	)
-	args := []any{
+	args = []any{
 		staging.String(),
 		strings.Join(columns, ","),
 		opts,
@@ -282,7 +282,7 @@ func (p *PostgresDialect) normalise(alias string, c model.ColumnSpec) string {
 // order each engine finds cheapest, and allows the scan to be parallelised,
 // without the digests disagreeing. Summation gives that for free; an ordered
 // concatenation would not.
-func (p *PostgresDialect) RangeDigestQuery(t model.TableRef, columns []model.ColumnSpec, r Range, includeDeleted bool) (string, []any) {
+func (p *PostgresDialect) RangeDigestQuery(t model.TableRef, columns []model.ColumnSpec, r Range, includeDeleted bool) (query string, args []any) {
 	digest := p.RowDigestExpr("t", columns)
 	where, args := p.whereClause("t", r, includeDeleted, 1)
 
@@ -295,7 +295,7 @@ func (p *PostgresDialect) RangeDigestQuery(t model.TableRef, columns []model.Col
 }
 
 // CountQuery renders a bounded row count.
-func (p *PostgresDialect) CountQuery(t model.TableRef, r Range, includeDeleted bool) (string, []any) {
+func (p *PostgresDialect) CountQuery(t model.TableRef, r Range, includeDeleted bool) (query string, args []any) {
 	where, args := p.whereClause("t", r, includeDeleted, 1)
 	return fmt.Sprintf("SELECT count(*)::bigint FROM %s AS t%s", p.QuoteTable(t), where), args
 }
@@ -305,7 +305,7 @@ func (p *PostgresDialect) CountQuery(t model.TableRef, r Range, includeDeleted b
 // Keyset pagination rather than OFFSET: OFFSET makes the database scan and
 // discard every preceding row, so chunk N costs O(N) and chunking a large table
 // degrades into a quadratic scan.
-func (p *PostgresDialect) KeysetPageQuery(t model.TableRef, keyColumn string, limit int, after any) (string, []any) {
+func (p *PostgresDialect) KeysetPageQuery(t model.TableRef, keyColumn string, limit int, after any) (query string, args []any) {
 	col := p.Quote(keyColumn)
 	if after == nil {
 		return fmt.Sprintf("SELECT %s FROM %s ORDER BY %s LIMIT %d", col, p.QuoteTable(t), col, limit), nil
@@ -315,7 +315,7 @@ func (p *PostgresDialect) KeysetPageQuery(t model.TableRef, keyColumn string, li
 }
 
 // RowsInRangeQuery selects full row images for a key range.
-func (p *PostgresDialect) RowsInRangeQuery(t model.TableRef, columns []string, r Range, includeDeleted bool) (string, []any) {
+func (p *PostgresDialect) RowsInRangeQuery(t model.TableRef, columns []string, r Range, includeDeleted bool) (query string, args []any) {
 	where, args := p.whereClause("t", r, includeDeleted, 1)
 	order := ""
 	if r.Column != "" {
@@ -325,9 +325,8 @@ func (p *PostgresDialect) RowsInRangeQuery(t model.TableRef, columns []string, r
 		strings.Join(prefixAll("t.", quoteAll(p, columns)), ", "), p.QuoteTable(t), where, order), args
 }
 
-func (p *PostgresDialect) whereClause(alias string, r Range, includeDeleted bool, start int) (string, []any) {
+func (p *PostgresDialect) whereClause(alias string, r Range, includeDeleted bool, start int) (query string, args []any) {
 	var conds []string
-	var args []any
 	n := start
 
 	if r.Column != "" {
@@ -340,7 +339,6 @@ func (p *PostgresDialect) whereClause(alias string, r Range, includeDeleted bool
 		if r.High != nil {
 			conds = append(conds, fmt.Sprintf("%s <= %s", col, p.Placeholder(n)))
 			args = append(args, r.High)
-			n++
 		}
 	}
 	if !includeDeleted {

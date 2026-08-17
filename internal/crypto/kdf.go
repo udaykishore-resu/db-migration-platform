@@ -3,6 +3,7 @@ package crypto
 import (
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 )
 
 // Purposes used for key separation. A compromise of one derived key must not
@@ -54,12 +55,13 @@ func hkdfExpand(prk, info []byte, length int) []byte {
 // across tenants that should be isolated.
 func prf(key []byte, domain string, value []byte) []byte {
 	h := hmac.New(sha256.New, key)
-	var lenBuf [4]byte
-	n := len(domain)
-	lenBuf[0] = byte(n >> 24)
-	lenBuf[1] = byte(n >> 16)
-	lenBuf[2] = byte(n >> 8)
-	lenBuf[3] = byte(n)
+	// Length-prefix the domain so that a domain/value split cannot be forged by
+	// choosing a value that reproduces another domain's concatenation. Written
+	// through encoding/binary rather than by hand: the manual shift-and-truncate
+	// version silently wraps on a domain longer than 4 GiB, and more immediately,
+	// it is the kind of code a reviewer has to check rather than read.
+	var lenBuf [8]byte
+	binary.BigEndian.PutUint64(lenBuf[:], uint64(len(domain)))
 	h.Write(lenBuf[:])
 	h.Write([]byte(domain))
 	h.Write(value)

@@ -22,7 +22,7 @@ const (
 // NewLogger builds the process logger. Output is JSON so that it can be shipped
 // to Splunk or CloudWatch and parsed without a grok pattern, and the service
 // name is bound once so every line is attributable.
-func NewLogger(w io.Writer, level string, service, instance string) *slog.Logger {
+func NewLogger(w io.Writer, level, service, instance string) *slog.Logger {
 	if w == nil {
 		w = os.Stdout
 	}

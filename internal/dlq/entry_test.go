@@ -1,6 +1,7 @@
 package dlq
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
@@ -64,7 +65,7 @@ func TestEntryCapturesReplayContext(t *testing.T) {
 	ev := event()
 	e := NewEntry("mig-1", ev, errors.New("connection reset"), policy(), now)
 
-	if string(e.Payload) != string(ev.Raw) {
+	if !bytes.Equal(e.Payload, ev.Raw) {
 		t.Error("original payload not retained")
 	}
 	if e.Topic != ev.Topic || e.Partition != ev.Partition || e.Offset != ev.Offset {

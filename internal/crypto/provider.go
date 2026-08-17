@@ -126,7 +126,7 @@ func (p *Provider) ProtectRow(spec model.TableSpec, row map[string]any) (map[str
 
 // protectValue applies one column's protection. The boolean result reports
 // whether the column should be present in the output at all.
-func (p *Provider) protectValue(spec model.TableSpec, col model.ColumnSpec, value any) (any, bool, error) {
+func (p *Provider) protectValue(spec model.TableSpec, col model.ColumnSpec, value any) (protected any, keep bool, err error) {
 	switch col.Protect {
 	case "", model.ProtectNone:
 		return value, true, nil
@@ -140,10 +140,7 @@ func (p *Provider) protectValue(spec model.TableSpec, col model.ColumnSpec, valu
 			// never there and would break NULL-aware queries on the target.
 			return nil, true, nil
 		}
-		s, err := asString(value)
-		if err != nil {
-			return nil, false, err
-		}
+		s := asString(value)
 		domain := Domain(spec.Source, col.Name)
 		return p.tokenizer.Token(domain, s, p.formatFor(domain)), true, nil
 
@@ -151,10 +148,7 @@ func (p *Provider) protectValue(spec model.TableSpec, col model.ColumnSpec, valu
 		if value == nil {
 			return nil, true, nil
 		}
-		s, err := asString(value)
-		if err != nil {
-			return nil, false, err
-		}
+		s := asString(value)
 		ct, err := p.cipher.Encrypt(Domain(spec.Source, col.Name), []byte(s))
 		if err != nil {
 			return nil, false, err
@@ -226,15 +220,15 @@ func (p *Provider) Close() error { return p.source.Close() }
 // arrives as int64 from the snapshot and float64 from JSON tokenises identically
 // — without this, the snapshot and CDC paths would produce different tokens for
 // the same row and reconciliation would report drift that does not exist.
-func asString(v any) (string, error) {
+func asString(v any) string {
 	switch t := v.(type) {
 	case string:
-		return t, nil
+		return t
 	case []byte:
-		return string(t), nil
+		return string(t)
 	case nil:
-		return "", nil
+		return ""
 	default:
-		return model.CanonicalValue(v), nil
+		return model.CanonicalValue(v)
 	}
 }

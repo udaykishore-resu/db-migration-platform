@@ -403,7 +403,7 @@ func (s *Store) scanEntry(rows *sql.Rows) (dlq.Entry, error) {
 	return e, nil
 }
 
-func (s *Store) encodePayload(raw []byte) (string, bool, error) {
+func (s *Store) encodePayload(raw []byte) (payload string, encrypted bool, err error) {
 	if s.cipher == nil || len(raw) == 0 {
 		return string(raw), false, nil
 	}

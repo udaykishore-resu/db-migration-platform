@@ -11,6 +11,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -83,6 +84,12 @@ func run() error {
 
 type server struct{ app *app.App }
 
+// writeErr is the single place an error becomes a response body, so the wire
+// shape cannot drift between handlers.
+func writeErr(w http.ResponseWriter, status int, err error) {
+	obs.WriteJSON(w, status, map[string]string{"error": err.Error()})
+}
+
 func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/status", s.handleStatus)
 	mux.HandleFunc("GET /v1/cutover/readiness", s.handleReadiness)
@@ -134,7 +141,7 @@ func currentLag() (current, stableFor time.Duration) { return 0, 0 }
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	readiness, st, err := s.evaluate(r.Context())
 	if err != nil {
-		obs.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	counts, _ := s.app.Store.Counts(r.Context())
@@ -156,7 +163,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	readiness, _, err := s.evaluate(r.Context())
 	if err != nil {
-		obs.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	// 200 when open, 409 when closed, so a deployment pipeline can gate on the
@@ -171,7 +178,7 @@ func (s *server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleDLQCounts(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.app.Store.Counts(r.Context())
 	if err != nil {
-		obs.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	obs.WriteJSON(w, http.StatusOK, counts)
@@ -183,19 +190,17 @@ func (s *server) handleRequeue(w http.ResponseWriter, r *http.Request) {
 		By  string  `json:"by"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		obs.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if body.By == "" {
-		obs.WriteJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "requeue must record who authorised it",
-		})
+		writeErr(w, http.StatusBadRequest, errors.New("requeue must record who authorised it"))
 		return
 	}
 
 	n, err := s.app.Store.Requeue(r.Context(), body.IDs, body.By)
 	if err != nil {
-		obs.WriteJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
 	s.app.Log.InfoContext(r.Context(), "quarantined records requeued",
@@ -209,13 +214,13 @@ func (s *server) handlePhase(w http.ResponseWriter, r *http.Request) {
 		By    string `json:"by"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		obs.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	if err := s.app.Store.SetPhase(r.Context(), control.Phase(body.Phase)); err != nil {
 		// An illegal transition is a client error, and the message already lists
 		// the legal alternatives.
-		obs.WriteJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	s.app.Log.InfoContext(r.Context(), "migration phase changed",

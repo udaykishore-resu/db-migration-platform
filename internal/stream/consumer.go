@@ -175,7 +175,7 @@ func (c *Consumer) Close() error {
 
 // DiscoverPartitions asks the brokers which partitions each topic has, so the
 // service does not need them listed in configuration.
-func DiscoverPartitions(ctx context.Context, brokers []string, topics []string) (map[string][]int32, error) {
+func DiscoverPartitions(ctx context.Context, brokers, topics []string) (map[string][]int32, error) {
 	if len(brokers) == 0 {
 		return nil, fmt.Errorf("stream: no brokers configured")
 	}

@@ -1,6 +1,7 @@
 package crypto
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -292,7 +293,7 @@ func TestPurposeSeparation(t *testing.T) {
 	src, _ := NewStaticKeySource(testKey(t), true)
 	a, _ := src.Key(context.Background(), PurposeToken)
 	b, _ := src.Key(context.Background(), PurposeEncrypt)
-	if string(a) == string(b) {
+	if bytes.Equal(a, b) {
 		t.Fatal("keys for different purposes must differ")
 	}
 }

@@ -83,7 +83,7 @@ func TestRowKeyPartitionSpread(t *testing.T) {
 
 func TestRowKeyHashDoesNotLeakValues(t *testing.T) {
 	k := NewRowKey(map[string]any{"ssn": "123-45-6789"})
-	if got := k.String(); got == "123-45-6789" || len(got) == 0 {
+	if got := k.String(); got == "123-45-6789" || got == "" {
 		t.Fatalf("key string form must be a digest, got %q", got)
 	}
 	for _, s := range []string{"123", "6789", "ssn"} {

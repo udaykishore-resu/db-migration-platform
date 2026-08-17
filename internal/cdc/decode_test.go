@@ -75,7 +75,7 @@ func TestMySQLBinlogPositionIsCombinedWithFileOrdinal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !(b.Source.LSN > a.Source.LSN) {
+	if b.Source.LSN <= a.Source.LSN {
 		t.Fatalf("LSN went backwards across a binlog rotation: %d then %d", a.Source.LSN, b.Source.LSN)
 	}
 }

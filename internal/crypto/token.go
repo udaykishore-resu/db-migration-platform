@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"encoding/base32"
+	"encoding/binary"
 	"strings"
 	"unicode"
 )
@@ -93,15 +94,15 @@ func shapeToken(seed []byte, input string, keepClasses bool) string {
 	for _, r := range input {
 		switch {
 		case unicode.IsDigit(r):
-			b.WriteByte(byte('0' + stream.below(10)))
+			b.WriteByte('0' + stream.below(10))
 		case unicode.IsLetter(r) && keepClasses:
 			if unicode.IsUpper(r) {
-				b.WriteByte(byte('A' + stream.below(26)))
+				b.WriteByte('A' + stream.below(26))
 			} else {
-				b.WriteByte(byte('a' + stream.below(26)))
+				b.WriteByte('a' + stream.below(26))
 			}
 		case unicode.IsLetter(r):
-			b.WriteByte(byte('0' + stream.below(10)))
+			b.WriteByte('0' + stream.below(10))
 		default:
 			// Separators, whitespace and punctuation are structural, not
 			// sensitive, and preserving them keeps the value parseable by
@@ -118,7 +119,7 @@ type keystream struct {
 	seed  []byte
 	block []byte
 	pos   int
-	round int
+	round uint16
 }
 
 func newKeystream(seed []byte) *keystream {
@@ -129,7 +130,9 @@ func newKeystream(seed []byte) *keystream {
 
 func (k *keystream) refill() {
 	k.round++
-	k.block = hkdfExpand(k.seed, []byte{byte(k.round >> 8), byte(k.round)}, 32)
+	var counter [2]byte
+	binary.BigEndian.PutUint16(counter[:], k.round)
+	k.block = hkdfExpand(k.seed, counter[:], 32)
 	k.pos = 0
 }
 
@@ -145,15 +148,21 @@ func (k *keystream) next() byte {
 // below returns a uniform value in [0,n) using rejection sampling. Taking a
 // plain modulo would bias the low digits — small, but it is exactly the kind of
 // finding that stalls a cryptographic review, and the fix costs nothing.
-func (k *keystream) below(n int) byte {
-	if n <= 0 || n > 256 {
+//
+// The bound is a byte so that the arithmetic stays in byte width end to end. An
+// int version has to narrow on the way out, which is indistinguishable to a
+// static analyser from a conversion that can genuinely overflow.
+func (k *keystream) below(n byte) byte {
+	if n == 0 {
 		return 0
 	}
-	limit := 256 - (256 % n)
+	// Largest multiple of n that fits in a byte; values at or above it would
+	// wrap and bias the result, so they are redrawn.
+	limit := 256 - (256 % int(n))
 	for {
-		v := int(k.next())
-		if v < limit {
-			return byte(v % n)
+		v := k.next()
+		if int(v) < limit {
+			return v % n
 		}
 	}
 }

@@ -50,12 +50,16 @@ func NewCipher(key []byte) (*Cipher, error) {
 // from one column and pasted into another fails authentication rather than
 // silently decrypting.
 func (c *Cipher) Encrypt(domain string, plaintext []byte) (string, error) {
-	nonce := make([]byte, c.aead.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
+	// One allocation sized for nonce + ciphertext + tag, then Seal appends the
+	// ciphertext directly after the nonce. The obvious two-step version allocates
+	// the ciphertext separately and copies it again on append.
+	ns := c.aead.NonceSize()
+	buf := make([]byte, ns, ns+len(plaintext)+c.aead.Overhead())
+	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("crypto: nonce: %w", err)
 	}
-	sealed := c.aead.Seal(nil, nonce, plaintext, []byte(domain))
-	return cipherPrefix + base64.RawStdEncoding.EncodeToString(append(nonce, sealed...)), nil
+	sealed := c.aead.Seal(buf, buf[:ns], plaintext, []byte(domain))
+	return cipherPrefix + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
 // EncryptDeterministic applies authenticated encryption with a synthetic nonce
@@ -67,9 +71,11 @@ func (c *Cipher) Encrypt(domain string, plaintext []byte) (string, error) {
 // wrong one for a low-cardinality attribute where equality leakage is close to
 // revealing the value itself.
 func (c *Cipher) EncryptDeterministic(domain string, plaintext []byte) (string, error) {
-	nonce := prf(c.macKey, domain, plaintext)[:c.aead.NonceSize()]
-	sealed := c.aead.Seal(nil, nonce, plaintext, []byte(domain))
-	return deterministicMagic + base64.RawStdEncoding.EncodeToString(append(nonce, sealed...)), nil
+	ns := c.aead.NonceSize()
+	buf := make([]byte, ns, ns+len(plaintext)+c.aead.Overhead())
+	copy(buf, prf(c.macKey, domain, plaintext)[:ns])
+	sealed := c.aead.Seal(buf, buf[:ns], plaintext, []byte(domain))
+	return deterministicMagic + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
 // Decrypt reverses either mode. It is used by operational tooling and by the

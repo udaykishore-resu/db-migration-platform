@@ -199,13 +199,12 @@ func midpointString(lo, hi string) string {
 	mid := new(big.Int).Add(l, h)
 	mid.Rsh(mid, 1)
 
+	// FillBytes writes the big-endian representation zero-padded into buf, which
+	// is exactly the fixed-width encoding this function assumed — and it replaces
+	// a shift-and-mask loop whose per-byte narrowing a static analyser cannot
+	// distinguish from a genuine overflow.
 	buf := make([]byte, n)
-	tmp := new(big.Int).Set(mid)
-	mask := big.NewInt(0xff)
-	for i := n - 1; i >= 0; i-- {
-		buf[i] = byte(new(big.Int).And(tmp, mask).Int64())
-		tmp.Rsh(tmp, 8)
-	}
+	mid.FillBytes(buf)
 	// Trailing NULs are an artefact of the fixed-width encoding, not part of the
 	// value, and leaving them in produces a key no database will ever match.
 	return strings.TrimRight(string(buf), "\x00")

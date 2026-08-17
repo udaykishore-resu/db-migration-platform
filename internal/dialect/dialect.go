@@ -279,27 +279,6 @@ func columnsForDigest(columns []model.ColumnSpec) []model.ColumnSpec {
 	return out
 }
 
-// buildInsertPlaceholders renders "($1,$2,$3),($4,$5,$6)" style tuples.
-func buildInsertPlaceholders(d Dialect, columns, rows int) string {
-	var b strings.Builder
-	n := 1
-	for r := 0; r < rows; r++ {
-		if r > 0 {
-			b.WriteString(", ")
-		}
-		b.WriteByte('(')
-		for c := 0; c < columns; c++ {
-			if c > 0 {
-				b.WriteString(", ")
-			}
-			b.WriteString(d.Placeholder(n))
-			n++
-		}
-		b.WriteByte(')')
-	}
-	return b.String()
-}
-
 // quoteAll renders a list of identifiers.
 func quoteAll(d Dialect, names []string) []string {
 	out := make([]string, len(names))

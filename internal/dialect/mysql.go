@@ -140,7 +140,7 @@ func (m *MySQLDialect) DropStagingTable(staging model.TableRef) string {
 // unquoted fields — and the CSV writer quotes anything containing a delimiter.
 // Without the explicit NULLIF, every quoted NULL would load as the literal
 // two-character string.
-func (m *MySQLDialect) BulkImport(staging model.TableRef, columns []string, src S3Source) (string, []any) {
+func (m *MySQLDialect) BulkImport(staging model.TableRef, columns []string, src S3Source) (query string, args []any) {
 	vars := make([]string, len(columns))
 	sets := make([]string, len(columns))
 	for i, c := range columns {
@@ -283,7 +283,7 @@ func (m *MySQLDialect) normalise(alias string, c model.ColumnSpec) string {
 // RangeDigestQuery renders the order-independent range digest, matching the
 // Postgres formulation: two independent 60-bit projections of the row hash,
 // summed, plus a row count.
-func (m *MySQLDialect) RangeDigestQuery(t model.TableRef, columns []model.ColumnSpec, r Range, includeDeleted bool) (string, []any) {
+func (m *MySQLDialect) RangeDigestQuery(t model.TableRef, columns []model.ColumnSpec, r Range, includeDeleted bool) (query string, args []any) {
 	digest := m.RowDigestExpr("t", columns)
 	where, args := m.whereClause("t", r, includeDeleted)
 
@@ -296,13 +296,13 @@ func (m *MySQLDialect) RangeDigestQuery(t model.TableRef, columns []model.Column
 }
 
 // CountQuery renders a bounded row count.
-func (m *MySQLDialect) CountQuery(t model.TableRef, r Range, includeDeleted bool) (string, []any) {
+func (m *MySQLDialect) CountQuery(t model.TableRef, r Range, includeDeleted bool) (query string, args []any) {
 	where, args := m.whereClause("t", r, includeDeleted)
 	return fmt.Sprintf("SELECT CAST(COUNT(*) AS SIGNED) FROM %s AS t%s", m.QuoteTable(t), where), args
 }
 
 // KeysetPageQuery walks the key space in order without an OFFSET scan.
-func (m *MySQLDialect) KeysetPageQuery(t model.TableRef, keyColumn string, limit int, after any) (string, []any) {
+func (m *MySQLDialect) KeysetPageQuery(t model.TableRef, keyColumn string, limit int, after any) (query string, args []any) {
 	col := m.Quote(keyColumn)
 	if after == nil {
 		return fmt.Sprintf("SELECT %s FROM %s ORDER BY %s LIMIT %d", col, m.QuoteTable(t), col, limit), nil
@@ -312,7 +312,7 @@ func (m *MySQLDialect) KeysetPageQuery(t model.TableRef, keyColumn string, limit
 }
 
 // RowsInRangeQuery selects full row images for a key range.
-func (m *MySQLDialect) RowsInRangeQuery(t model.TableRef, columns []string, r Range, includeDeleted bool) (string, []any) {
+func (m *MySQLDialect) RowsInRangeQuery(t model.TableRef, columns []string, r Range, includeDeleted bool) (query string, args []any) {
 	where, args := m.whereClause("t", r, includeDeleted)
 	order := ""
 	if r.Column != "" {
@@ -322,9 +322,8 @@ func (m *MySQLDialect) RowsInRangeQuery(t model.TableRef, columns []string, r Ra
 		strings.Join(prefixAll("t.", quoteAll(m, columns)), ", "), m.QuoteTable(t), where, order), args
 }
 
-func (m *MySQLDialect) whereClause(alias string, r Range, includeDeleted bool) (string, []any) {
+func (m *MySQLDialect) whereClause(alias string, r Range, includeDeleted bool) (query string, args []any) {
 	var conds []string
-	var args []any
 
 	if r.Column != "" {
 		col := alias + "." + m.Quote(r.Column)

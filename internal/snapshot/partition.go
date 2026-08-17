@@ -203,7 +203,7 @@ func (w *PartWriter) roll() error {
 	stored := io.MultiWriter(f, digest)
 
 	p := &openPart{index: idx, name: name, file: f, digest: digest}
-	var sink io.Writer = stored
+	sink := stored
 	if w.cfg.Compress {
 		p.gz = gzip.NewWriter(stored)
 		sink = p.gz

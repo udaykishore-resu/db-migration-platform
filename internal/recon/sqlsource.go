@@ -103,13 +103,12 @@ func (p *SQLPair) pick(side Side) (*sql.DB, dialect.Dialect, model.TableRef) {
 }
 
 // rangePredicate renders the half-open (low, high] predicate for either dialect.
-func rangePredicate(d dialect.Dialect, r dialect.Range) (string, []any) {
+func rangePredicate(d dialect.Dialect, r dialect.Range) (query string, args []any) {
 	if r.Column == "" || (r.Low == nil && r.High == nil) {
 		return "", nil
 	}
 	col := "t." + d.Quote(r.Column)
 	var clause string
-	var args []any
 	n := 1
 	if r.Low != nil {
 		clause = " WHERE " + col + " > " + d.Placeholder(n)
