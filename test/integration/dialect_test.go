@@ -114,7 +114,7 @@ func createTable(t *testing.T, e engine, name string) model.TableRef {
 			note             TEXT,
 			_mig_lsn         BIGINT      NOT NULL DEFAULT 0,
 			_mig_deleted     TINYINT(1)  NOT NULL DEFAULT 0,
-			_mig_updated_at  DATETIME(6) NOT NULL DEFAULT UTC_TIMESTAMP(6)
+			_mig_updated_at  DATETIME(6) NOT NULL DEFAULT (UTC_TIMESTAMP(6))
 		) ENGINE=InnoDB`, q)
 	}
 
