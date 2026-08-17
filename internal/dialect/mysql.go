@@ -254,11 +254,12 @@ func (m *MySQLDialect) normalise(alias string, c model.ColumnSpec) string {
 	case model.TypeDate:
 		expr = fmt.Sprintf("DATE_FORMAT(%s, '%%Y-%%m-%%d')", ref)
 	case model.TypeDecimal:
+		// FORMAT pads to exactly the requested scale, which is what the Postgres
+		// side is now made to match. It also inserts thousands separators, which
+		// Postgres does not, so those are stripped.
 		if c.Scale > 0 {
-			expr = fmt.Sprintf("TRIM(TRAILING '.' FROM FORMAT(ROUND(CAST(%s AS DECIMAL(65,%d)), %d), %d, 'en_US'))",
+			expr = fmt.Sprintf("REPLACE(FORMAT(ROUND(CAST(%s AS DECIMAL(65,%d)), %d), %d, 'en_US'), ',', '')",
 				ref, c.Scale, c.Scale, c.Scale)
-			// FORMAT inserts thousands separators, which Postgres FM does not.
-			expr = fmt.Sprintf("REPLACE(%s, ',', '')", expr)
 		} else {
 			expr = fmt.Sprintf("CAST(ROUND(CAST(%s AS DECIMAL(65,0)), 0) AS CHAR)", ref)
 		}

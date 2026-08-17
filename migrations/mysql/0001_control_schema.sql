@@ -4,7 +4,21 @@
 -- inline, because a silent divergence between the two control schemas is a very
 -- efficient way to make a bug reproduce on only one engine.
 --
--- Apply with:  mysql --database=migration_ctl < 0001_control_schema.sql
+-- Two MySQL-specific things shape this file:
+--
+--   1. A function used as a column default must be wrapped in parentheses —
+--      DEFAULT (UTC_TIMESTAMP(6)), not DEFAULT UTC_TIMESTAMP(6). CURRENT_TIMESTAMP
+--      is the single exception to that rule. Expression defaults require MySQL
+--      8.0.13 or later. (MariaDB accepts both spellings, so a MariaDB smoke test
+--      will not catch the unparenthesised form.)
+--
+--   2. MySQL has no CREATE INDEX ... IF NOT EXISTS, so every index is declared
+--      inside its CREATE TABLE. Combined with CREATE TABLE IF NOT EXISTS that
+--      makes the whole file re-runnable, matching the PostgreSQL file. Separate
+--      CREATE INDEX statements would fail with "Duplicate key name" the second
+--      time anyone applied it.
+--
+-- Apply with:  mysql -u root -p < 0001_control_schema.sql
 
 CREATE DATABASE IF NOT EXISTS migration_ctl
   DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_as_cs;
@@ -30,8 +44,8 @@ CREATE TABLE IF NOT EXISTS migration_state (
 
     reverse_replication_armed TINYINT(1)   NOT NULL DEFAULT 0,
 
-    started_at                DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
-    updated_at                DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    started_at                DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
+    updated_at                DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
 
     PRIMARY KEY (migration_id),
     CONSTRAINT migration_state_parts_sane CHECK (parts_loaded <= parts_total)
@@ -45,7 +59,8 @@ CREATE TABLE IF NOT EXISTS applied_offset (
     `partition`  INT          NOT NULL,
     `offset`     BIGINT       NOT NULL,
     last_lsn     BIGINT       NOT NULL DEFAULT 0,
-    updated_at   DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    updated_at   DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
+
     PRIMARY KEY (migration_id, topic, `partition`)
 ) ENGINE=InnoDB;
 
@@ -66,7 +81,7 @@ CREATE TABLE IF NOT EXISTS dead_letter (
     attempts          INT          NOT NULL DEFAULT 0,
     status            VARCHAR(16)  NOT NULL DEFAULT 'pending',
 
-    first_seen_at     DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    first_seen_at     DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
     next_retry_at     DATETIME(6),
     claimed_at        DATETIME(6),
     claimed_by        VARCHAR(128),
@@ -79,19 +94,24 @@ CREATE TABLE IF NOT EXISTS dead_letter (
     `offset`          BIGINT       NOT NULL DEFAULT 0,
 
     PRIMARY KEY (id),
+
+    -- MySQL has no partial indexes, so status leads the index instead of
+    -- filtering it. The effect is the same for the claim query, which orders by
+    -- next_retry_at within status; the index is simply larger. Without it the
+    -- repair worker's SKIP LOCKED scan degrades into a table scan once resolved
+    -- rows outnumber pending ones by a thousand to one.
+    KEY dead_letter_due_idx (migration_id, status, next_retry_at),
+    -- source_table is prefixed to 191 characters: utf8mb4 spends four bytes per
+    -- character and InnoDB's index key limit is 3072 bytes.
+    KEY dead_letter_table_idx (migration_id, source_table(191), status),
+    KEY dead_letter_key_idx (migration_id, row_key_hash),
+
     CONSTRAINT dead_letter_status_known
         CHECK (status IN ('pending','retrying','quarantined','resolved','discarded'))
 ) ENGINE=InnoDB;
 
--- MySQL has no partial indexes, so status leads the index instead of filtering
--- it. The effect is the same for the claim query; the index is simply larger.
-CREATE INDEX dead_letter_due_idx
-    ON dead_letter (migration_id, status, next_retry_at);
-CREATE INDEX dead_letter_table_idx
-    ON dead_letter (migration_id, source_table(191), status);
-CREATE INDEX dead_letter_key_idx
-    ON dead_letter (migration_id, row_key_hash);
-
+-- source_table is VARCHAR(191) rather than 512 here because it participates in
+-- the primary key, which is subject to the same 3072-byte limit.
 CREATE TABLE IF NOT EXISTS part_state (
     migration_id VARCHAR(128) NOT NULL,
     source_table VARCHAR(191) NOT NULL,
@@ -104,13 +124,10 @@ CREATE TABLE IF NOT EXISTS part_state (
     last_error   TEXT,
     sealed_at    DATETIME(6),
     loaded_at    DATETIME(6),
-    PRIMARY KEY (migration_id, source_table, part_index)
-) ENGINE=InnoDB;
--- source_table is VARCHAR(191) rather than 512 because it participates in the
--- primary key and InnoDB's index key limit is 3072 bytes, which utf8mb4 spends
--- four bytes per character against.
 
-CREATE INDEX part_state_pending_idx ON part_state (migration_id, state);
+    PRIMARY KEY (migration_id, source_table, part_index),
+    KEY part_state_pending_idx (migration_id, state)
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS chunk_state (
     migration_id VARCHAR(128) NOT NULL,
@@ -124,6 +141,7 @@ CREATE TABLE IF NOT EXISTS chunk_state (
     state        VARCHAR(16)  NOT NULL DEFAULT 'pending',
     started_at   DATETIME(6),
     completed_at DATETIME(6),
+
     PRIMARY KEY (migration_id, source_table, chunk_id)
 ) ENGINE=InnoDB;
 
@@ -131,7 +149,7 @@ CREATE TABLE IF NOT EXISTS recon_run (
     id             BIGINT       NOT NULL AUTO_INCREMENT,
     migration_id   VARCHAR(128) NOT NULL,
     source_table   VARCHAR(512) NOT NULL,
-    started_at     DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    started_at     DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
     finished_at    DATETIME(6),
     findings       INT          NOT NULL DEFAULT 0,
     digest_queries INT          NOT NULL DEFAULT 0,
@@ -140,11 +158,10 @@ CREATE TABLE IF NOT EXISTS recon_run (
     deepest        INT          NOT NULL DEFAULT 0,
     complete       TINYINT(1)   NOT NULL DEFAULT 0,
     mode           VARCHAR(16)  NOT NULL DEFAULT 'continuous',
-    PRIMARY KEY (id)
-) ENGINE=InnoDB;
 
-CREATE INDEX recon_run_recent_idx
-    ON recon_run (migration_id, source_table(191), started_at DESC);
+    PRIMARY KEY (id),
+    KEY recon_run_recent_idx (migration_id, source_table(191), started_at DESC)
+) ENGINE=InnoDB;
 
 CREATE TABLE IF NOT EXISTS recon_finding (
     id           BIGINT       NOT NULL AUTO_INCREMENT,
@@ -159,28 +176,26 @@ CREATE TABLE IF NOT EXISTS recon_finding (
     source_rows  BIGINT,
     target_rows  BIGINT,
     detail       TEXT,
-    found_at     DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    found_at     DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
     repaired_at  DATETIME(6),
+
     PRIMARY KEY (id),
+    KEY recon_finding_open_idx (migration_id, source_table(191), kind),
     CONSTRAINT recon_finding_run_fk FOREIGN KEY (run_id)
         REFERENCES recon_run(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
-
-CREATE INDEX recon_finding_open_idx
-    ON recon_finding (migration_id, source_table(191), kind);
 
 CREATE TABLE IF NOT EXISTS cutover_audit (
     id            BIGINT       NOT NULL AUTO_INCREMENT,
     migration_id  VARCHAR(128) NOT NULL,
     action        VARCHAR(32)  NOT NULL,
     performed_by  VARCHAR(128) NOT NULL,
-    performed_at  DATETIME(6)  NOT NULL DEFAULT UTC_TIMESTAMP(6),
+    performed_at  DATETIME(6)  NOT NULL DEFAULT (UTC_TIMESTAMP(6)),
     gate_ready    TINYINT(1)   NOT NULL,
     blockers      TEXT,
     override      TINYINT(1)   NOT NULL DEFAULT 0,
     reason        TEXT,
-    PRIMARY KEY (id)
-) ENGINE=InnoDB;
 
-CREATE INDEX cutover_audit_migration_idx
-    ON cutover_audit (migration_id, performed_at DESC);
+    PRIMARY KEY (id),
+    KEY cutover_audit_migration_idx (migration_id, performed_at DESC)
+) ENGINE=InnoDB;

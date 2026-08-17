@@ -243,17 +243,21 @@ func (p *PostgresDialect) normalise(alias string, c model.ColumnSpec) string {
 	case model.TypeDate:
 		expr = fmt.Sprintf("to_char(%s, 'YYYY-MM-DD')", ref)
 	case model.TypeDecimal:
-		// Round to the declared scale on both sides so that 1.50 and 1.5 —
-		// which DB2 and Postgres disagree about preserving — compare equal.
-		expr = fmt.Sprintf("trim(trailing '.' from to_char(round(%s::numeric, %d), 'FM999999999999999999990.%s'))",
-			ref, c.Scale, strings.Repeat("9", maxInt(c.Scale, 0)))
-		if c.Scale <= 0 {
+		// Render EXACTLY the declared number of decimals. The '0' in the
+		// fractional mask forces trailing zeros to be printed; a '9' there
+		// suppresses them, which is the trap: Postgres would render 500.00 as
+		// "500" while MySQL's FORMAT pads to "500.00", and every decimal column
+		// would then reconcile as drift on every single row.
+		if c.Scale > 0 {
+			expr = fmt.Sprintf("to_char(round(%s::numeric, %d), 'FM999999999999999999990.%s')",
+				ref, c.Scale, strings.Repeat("0", c.Scale))
+		} else {
 			expr = fmt.Sprintf("to_char(round(%s::numeric, 0), 'FM999999999999999999990')", ref)
 		}
 	case model.TypeFloat:
-		// Fixed significant digits: the two engines' default float-to-text
-		// rendering differs in the last place often enough to matter.
-		expr = fmt.Sprintf("to_char(%s::numeric, 'FM999999999999999999990.999999999999')", ref)
+		// Fixed significant digits, zeros retained, for the same reason as above.
+		expr = fmt.Sprintf("to_char(round(%s::numeric, 12), 'FM999999999999999999990.%s')",
+			ref, strings.Repeat("0", 12))
 	case model.TypeBool:
 		expr = fmt.Sprintf("CASE WHEN %s THEN '1' ELSE '0' END", ref)
 	case model.TypeBytes:
@@ -427,11 +431,4 @@ func prefixAll(prefix string, items []string) []string {
 		out[i] = prefix + s
 	}
 	return out
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

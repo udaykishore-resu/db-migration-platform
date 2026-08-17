@@ -168,6 +168,33 @@ func TestRowDigestAppliesCrossEngineNormalisation(t *testing.T) {
 	}
 }
 
+// Postgres' FM mask suppresses trailing zeros when the fractional part is
+// written with '9', while MySQL's FORMAT pads to the declared scale. Mixing the
+// two renders 500.00 as "500" on one side and "500.00" on the other, so every
+// decimal column reconciles as drift on every single row — with the row counts
+// matching perfectly, which is what makes it so hard to spot.
+//
+// This is a unit-level guard for a bug that otherwise only shows up when both
+// engines are running side by side.
+func TestDecimalAndFloatKeepTrailingZerosOnBothEngines(t *testing.T) {
+	pg := NewPostgres().RowDigestExpr("t", spec().Columns)
+	if !strings.Contains(pg, "990.00") {
+		t.Errorf("postgres decimal mask must force trailing zeros for scale 2:\n%s", pg)
+	}
+	if strings.Contains(pg, "990.99") {
+		t.Errorf("postgres decimal mask suppresses trailing zeros, which MySQL does not:\n%s", pg)
+	}
+
+	my := NewMySQL().RowDigestExpr("t", spec().Columns)
+	if !strings.Contains(my, "FORMAT(") {
+		t.Errorf("mysql decimal rendering should pad to scale via FORMAT:\n%s", my)
+	}
+	// Trimming on one side only re-introduces the asymmetry this test exists for.
+	if strings.Contains(my, "TRIM(TRAILING '.'") {
+		t.Errorf("mysql must not trim the decimal point; it can only mask a mismatch:\n%s", my)
+	}
+}
+
 // Both engines must aggregate the row hashes in an order-independent way, so the
 // scan can be parallelised and each engine can choose its own access path.
 func TestRangeDigestIsOrderIndependentOnBothEngines(t *testing.T) {
